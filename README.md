@@ -363,3 +363,237 @@ Custom domain
 HTTPS certificate
 Pagination & filtering
 
+---------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+# 🚀 Two-Lambda Serverless Setup Guide
+## Frontend Lambda + Backend Lambda + API Gateway + DynamoDB
+
+---
+
+## Architecture
+
+```
+Browser
+  │
+  ├── GET /          ──► Frontend Lambda  ──► returns index HTML
+  ├── GET /success   ──► Frontend Lambda  ──► returns success HTML
+  │
+  └── /api/users     ──► Backend Lambda   ──► DynamoDB (CRUD)
+       /api/users/{id}
+```
+
+---
+
+## Project Files
+
+```
+project/
+├── frontend/
+│   └── lambda_function.py   ← Serves HTML pages (index + success)
+├── backend/
+│   └── lambda_function.py   ← REST API CRUD (GET/POST/PUT/DELETE)
+└── SETUP_GUIDE.md
+```
+
+---
+
+## STEP 1 — DynamoDB Table
+
+1. AWS Console → **DynamoDB → Create Table**
+2. Table name: `UsersTable`
+3. Partition key: `id` (String)
+4. Click **Create Table** → wait for status **Active**
+
+---
+
+## STEP 2 — Backend Lambda (CRUD API)
+
+1. **Lambda → Create Function**
+   - Name: `UsersApiBackend`
+   - Runtime: Python 3.12
+2. Paste contents of `backend/lambda_function.py`
+3. Edit top of file:
+   ```python
+   REGION     = 'us-east-1'   # ← your region
+   TABLE_NAME = 'UsersTable'  # ← your table name
+   ```
+4. **Configuration → General → Timeout**: 30 seconds
+5. **Configuration → Permissions** → click the Role → Add inline policy from `iam_policy.json`
+
+---
+
+## STEP 3 — Frontend Lambda (HTML Server)
+
+1. **Lambda → Create Function**
+   - Name: `UsersApiFrontend`
+   - Runtime: Python 3.12
+2. Paste contents of `frontend/lambda_function.py`
+3. **After deploying Backend API Gateway** (Step 4), come back and set:
+   ```python
+   BACKEND_API_URL = 'https://YOUR_ID.execute-api.us-east-1.amazonaws.com/prod'
+   ```
+4. Click **Deploy** in Lambda editor
+
+> Frontend Lambda needs NO DynamoDB access — no extra IAM policy needed.
+
+---
+
+## STEP 4 — API Gateway (Single REST API for both Lambdas)
+
+Create ONE API Gateway with two path groups:
+
+### 4A. Create the API
+- **API Gateway → Create API → REST API → Build**
+- Name: `UsersAPI`
+- Endpoint type: Regional
+
+---
+
+### 4B. Frontend Routes (serve HTML)
+
+**Resource: /**
+1. The root `/` already exists
+2. Select `/` → Create Method → **GET**
+   - Integration: Lambda Function
+   - ✅ Lambda Proxy integration
+   - Lambda: `UsersApiFrontend`
+
+**Resource: /success**
+1. Select `/` → Create Resource
+   - Name: `success`, Path: `success`
+2. Select `/success` → Create Method → **GET**
+   - Integration: Lambda Proxy → `UsersApiFrontend`
+
+---
+
+### 4C. Backend Routes (REST API)
+
+**Resource: /users**
+1. Select `/` → Create Resource
+   - Name: `users`, Path: `users`
+   - ✅ Enable CORS
+2. Add methods on `/users`:
+   - **GET** → Lambda Proxy → `UsersApiBackend`
+   - **POST** → Lambda Proxy → `UsersApiBackend`
+   - **OPTIONS** → (auto-created by CORS)
+
+**Resource: /users/{id}**
+1. Select `/users` → Create Resource
+   - Name: `{id}`, Path: `{id}`
+   - ✅ Enable CORS
+2. Add methods on `/users/{id}`:
+   - **GET** → Lambda Proxy → `UsersApiBackend`
+   - **PUT** → Lambda Proxy → `UsersApiBackend`
+   - **DELETE** → Lambda Proxy → `UsersApiBackend`
+   - **OPTIONS** → (auto-created by CORS)
+
+---
+
+### 4D. Enable CORS on both /users resources
+
+For `/users`:
+- ✅ Default 4XX, Default 5XX
+- ✅ GET, POST, OPTIONS
+- Headers: `Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token`
+- Origin: `*`
+
+For `/users/{id}`:
+- ✅ Default 4XX, Default 5XX
+- ✅ GET, PUT, DELETE, OPTIONS
+- Headers: same as above
+- Origin: `*`
+
+---
+
+### 4E. Deploy
+
+1. **API actions → Deploy API**
+2. Stage: `prod`
+3. Click **Deploy**
+4. **Copy the Invoke URL** → looks like:
+   `https://abc123.execute-api.us-east-1.amazonaws.com/prod`
+
+---
+
+## STEP 5 — Connect Frontend Lambda to Backend
+
+1. Open `frontend/lambda_function.py`
+2. Set line 14:
+   ```python
+   BACKEND_API_URL = 'https://abc123.execute-api.us-east-1.amazonaws.com/prod'
+   ```
+3. Paste updated code into `UsersApiFrontend` Lambda
+4. Click **Deploy**
+
+---
+
+## STEP 6 — Test Your App
+
+Open in browser:
+```
+https://abc123.execute-api.us-east-1.amazonaws.com/prod/
+```
+
+That's it! No S3, no hosting — Lambda serves the HTML directly.
+
+---
+
+## API Endpoints Reference
+
+| Method | Path            | Lambda  | Action        |
+|--------|-----------------|---------|---------------|
+| GET    | /               | Frontend| Dashboard     |
+| GET    | /success        | Frontend| Success page  |
+| GET    | /users          | Backend | Get all users |
+| POST   | /users          | Backend | Create user   |
+| GET    | /users/{id}     | Backend | Get one user  |
+| PUT    | /users/{id}     | Backend | Update user   |
+| DELETE | /users/{id}     | Backend | Delete user   |
+
+---
+
+## IAM Policy for Backend Lambda only
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem", "dynamodb:PutItem",
+        "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+        "dynamodb:Scan", "dynamodb:Query"
+      ],
+      "Resource": "arn:aws:dynamodb:us-east-1:615037471716:table/UsersTable"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:*:*:*"
+    }
+  ]
+}
+```
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| White blank page | Check Frontend Lambda logs in CloudWatch |
+| API calls fail | Verify `BACKEND_API_URL` has no trailing slash |
+| CORS error | Redeploy API Gateway after enabling CORS |
+| 502 on backend | Check Backend Lambda logs, verify TABLE_NAME |
+| HTML shows raw text | Ensure `Content-Type: text/html` in Lambda response |
